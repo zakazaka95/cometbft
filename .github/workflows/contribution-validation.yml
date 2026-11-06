@@ -1,0 +1,96 @@
+name: Review readiness - CometBFT Linux
+
+"on":
+  push:
+    branches: [validation/review-ready-2026-11-06]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'zakazaka95/cometbft'
+    name: ${{ matrix.source.change }} / ${{ matrix.task }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [unit, race, lint, generated]
+        source:
+          - change: defined-string-map-keys
+            head: ff5761da7c8d095d93bce399c543d20116b2d2c2
+            tree: 0a360f24bb95a781a561575d26fc27f8ad417285
+          - change: surrounding-json-whitespace
+            head: 9c11036ec120a82d4b967b3fd5883c8db0a23908
+            tree: 0e54246c6f56b5b4d0b02ccd1b700135a28eb511
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    env:
+      GOTOOLCHAIN: local
+      CGO_ENABLED: '1'
+      GOMAXPROCS: '2'
+    steps:
+      - name: Check out the exact published source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zakazaka95/cometbft
+          ref: ${{ matrix.source.head }}
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify source identity
+        env:
+          EXPECTED_HEAD: ${{ matrix.source.head }}
+          EXPECTED_TREE: ${{ matrix.source.tree }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain)"
+          printf 'Validated source HEAD: %s\nSource tree: %s\n' "$EXPECTED_HEAD" "$EXPECTED_TREE"
+      - name: Set up the repository-pinned Go version
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Show the actual toolchain
+        run: go version
+      - name: Run the selected complete Linux gate
+        env:
+          VALIDATION_TASK: ${{ matrix.task }}
+        run: |
+          set -euo pipefail
+          case "$VALIDATION_TASK" in
+            unit)
+              make test
+              ;;
+            race)
+              make test_race
+              ;;
+            lint)
+              # Includes the repository's gofmt/goimports checks.
+              # Makefile pins golangci-lint v2.11.3; no typo task is added.
+              make lint
+              ;;
+            generated)
+              # These two generation checks run unconditionally upstream.
+              make mockery metrics
+              git add -A
+              git diff HEAD --exit-code
+              make proto-gen
+              git add -A
+              git diff HEAD --exit-code
+              ;;
+            *) exit 2 ;;
+          esac
+      - name: Confirm source commit was not changed
+        env:
+          EXPECTED_HEAD: ${{ matrix.source.head }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
