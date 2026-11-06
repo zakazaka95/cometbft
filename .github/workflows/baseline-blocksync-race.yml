@@ -1,0 +1,67 @@
+name: CometBFT baseline blocksync race reproduction
+
+"on":
+  push:
+    branches: [validation/review-ready-baseline-2026-11-07]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    if: github.repository == 'zakazaka95/cometbft'
+    name: Exact-base blocksync race reproduction only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: source
+    env:
+      CGO_ENABLED: '1'
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '2'
+      BASE_HEAD: e071d3d628f595681cda98b98a1b05fe3cd63c75
+      BASE_TREE: 86ab50cf91845c513c4be81b4c8b727a0d9a739d
+      BLOCKSYNC_TREE: 53fa82f537b99985f5d203a4a2ef1dd90cc81f33
+    steps:
+      - name: Check out the unchanged baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zakazaka95/cometbft
+          ref: e071d3d628f595681cda98b98a1b05fe3cd63c75
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify exact baseline identities
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$BASE_HEAD"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$BASE_TREE"
+          test "$(git rev-parse HEAD:blocksync)" = "$BLOCKSYNC_TREE"
+          test -z "$(git status --porcelain)"
+          printf 'Baseline commit: %s\nBaseline tree: %s\nBlocksync tree: %s\n' "$BASE_HEAD" "$BASE_TREE" "$BLOCKSYNC_TREE"
+      - name: Set up the same Go toolchain
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.10'
+          cache: false
+      - name: Reproduce the baseline test race with a fixed bound
+        run: |
+          set -euo pipefail
+          go version
+          echo 'The following is a baseline reproduction, not a source-readiness certificate.'
+          echo 'Both tests are selected so delayed fixture work can run before the test process exits.'
+          set +e
+          go test -p 1 -race -tags bls12381,secp256k1eth -mod=readonly -count=3 -timeout=10m -v \
+            -run '^(TestBlockPoolTwoMaliciousPeersStaggered|TestReactorAdaptive)$/^ingestsBlock$' ./blocksync
+          result=$?
+          set -e
+          printf '\nActual bounded baseline Go-test exit code: %s\n' "$result"
+          {
+            echo '## Unchanged baseline reproduction only'
+            printf 'Source commit: `%s`\n\n' "$BASE_HEAD"
+            printf 'Actual Go-test exit code: `%s`\n\n' "$result"
+            echo 'A successful bounded attempt only means this attempt did not observe a failure. It does not erase the recorded race or certify either proposed change.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$result"
